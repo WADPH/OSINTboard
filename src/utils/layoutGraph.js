@@ -98,54 +98,67 @@ export function autoLayout(nodes, edges) {
  * Layout a single connected component using layered approach.
  */
 function layoutComponent(nodeIds, children, parents) {
-  // Compute in-degree (considering only edges within this component)
   const idSet = new Set(nodeIds);
-  const inDegree = new Map();
-  for (const id of nodeIds) {
-    const incoming = (parents.get(id) || []).filter((p) => idSet.has(p));
-    inDegree.set(id, incoming.length);
-  }
+  const inComponent = (id) => idSet.has(id);
 
-  // BFS from root nodes (in-degree 0) to assign layers
-  const layer = new Map();
-  const queue = [];
+  // 1. Break cycles. Investigation graphs often have A→B + B→A or longer
+  //    loops; the old "push child whenever its layer grows" BFS never
+  //    terminated on them and froze the tab. A DFS drops back edges (edges to
+  //    a node still on the DFS stack), leaving a DAG. Roots (no incoming
+  //    edges) are visited first so the natural flow keeps its direction.
+  const dagChildren = new Map(nodeIds.map((id) => [id, []]));
+  const visited = new Set();
+  const onStack = new Set();
 
-  for (const id of nodeIds) {
-    if (inDegree.get(id) === 0) {
-      layer.set(id, 0);
-      queue.push(id);
-    }
-  }
-
-  // If no root nodes (all in cycles), pick first as root
-  if (queue.length === 0) {
-    layer.set(nodeIds[0], 0);
-    queue.push(nodeIds[0]);
-  }
-
-  while (queue.length > 0) {
-    const current = queue.shift();
-    const currentLayer = layer.get(current);
-
-    for (const child of children.get(current) || []) {
-      if (!idSet.has(child)) continue;
-      const proposedLayer = currentLayer + 1;
-      if (!layer.has(child) || layer.get(child) < proposedLayer) {
-        layer.set(child, proposedLayer);
-        // Remove from queue if already there, re-add to process with new layer
-        const idx = queue.indexOf(child);
-        if (idx !== -1) queue.splice(idx, 1);
-        queue.push(child);
+  const visit = (start) => {
+    // Iterative DFS — no recursion-depth limit on long chains
+    const stack = [[start, 0]];
+    visited.add(start);
+    onStack.add(start);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      const [node, i] = frame;
+      const kids = (children.get(node) || []).filter(inComponent);
+      if (i >= kids.length) {
+        onStack.delete(node);
+        stack.pop();
+        continue;
+      }
+      frame[1] = i + 1;
+      const child = kids[i];
+      if (child === node || onStack.has(child)) continue; // self-loop / back edge
+      dagChildren.get(node).push(child);
+      if (!visited.has(child)) {
+        visited.add(child);
+        onStack.add(child);
+        stack.push([child, 0]);
       }
     }
+  };
+
+  const isRoot = (id) => !(parents.get(id) || []).some(inComponent);
+  for (const id of nodeIds) if (isRoot(id) && !visited.has(id)) visit(id);
+  for (const id of nodeIds) if (!visited.has(id)) visit(id); // pure cycles
+
+  // 2. Longest-path layering on the DAG (Kahn's algorithm): each node sits
+  //    one layer below its deepest parent. Every node is processed once.
+  const inDegree = new Map(nodeIds.map((id) => [id, 0]));
+  for (const id of nodeIds) {
+    for (const child of dagChildren.get(id)) {
+      inDegree.set(child, inDegree.get(child) + 1);
+    }
   }
 
-  // Handle any nodes not reached (shouldn't happen in a connected component,
-  // but could if edges only go one way in our BFS)
-  const maxLayer = Math.max(...layer.values());
-  for (const id of nodeIds) {
-    if (!layer.has(id)) {
-      layer.set(id, maxLayer + 1);
+  const layer = new Map();
+  const queue = nodeIds.filter((id) => inDegree.get(id) === 0);
+  for (const id of queue) layer.set(id, 0);
+
+  for (let qi = 0; qi < queue.length; qi++) {
+    const current = queue[qi];
+    for (const child of dagChildren.get(current)) {
+      layer.set(child, Math.max(layer.get(child) ?? 0, layer.get(current) + 1));
+      inDegree.set(child, inDegree.get(child) - 1);
+      if (inDegree.get(child) === 0) queue.push(child);
     }
   }
 

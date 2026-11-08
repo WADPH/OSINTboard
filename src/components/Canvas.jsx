@@ -58,6 +58,15 @@ const HISTORY_DEBOUNCE = 300; // ms
 const INITIAL_NODES = [];
 const INITIAL_EDGES = [];
 
+// Fingerprint of what undo should care about. Ignores transient UI state
+// (selection, dragging, measured size) so clicks and re-measures don't
+// create history entries.
+const historySignature = (nodes, edges) =>
+  JSON.stringify([
+    nodes.map((n) => [n.id, n.type, n.position?.x, n.position?.y, { ...n.data, media: undefined }]),
+    edges.map((e) => [e.id, e.source, e.target, e.sourceHandle, e.targetHandle, e.type, e.label, e.data]),
+  ]);
+
 // Deep-clone for history snapshots (strips heavy base64 media data)
 const cloneForHistory = (nodes, edges) => {
   const clonedNodes = nodes.map((n) => ({
@@ -66,7 +75,7 @@ const cloneForHistory = (nodes, edges) => {
     position: { ...n.position },
   }));
   const clonedEdges = edges.map((e) => ({ ...e }));
-  return { nodes: clonedNodes, edges: clonedEdges };
+  return { nodes: clonedNodes, edges: clonedEdges, sig: historySignature(nodes, edges) };
 };
 
 // Merge history snapshot back into live state, preserving media
@@ -99,73 +108,98 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
   const edgeUI = useMemo(() => ({ editingEdgeId, setEditingEdgeId }), [editingEdgeId]);
 
   // --- Undo / Redo system ---
-  const historyRef = useRef([{ nodes: [], edges: [] }]);
-  const [historyIndex, setHistoryIndex] = useState(0);
+  // History lives in refs (read by timers/handlers); `historyPos` mirrors the
+  // position into state only so the Undo/Redo buttons re-render.
+  //
+  // The push effect must depend ONLY on nodes/edges. Depending on the history
+  // index made every push re-trigger the effect, which pushed the same state
+  // again every 300ms forever — undo then just stepped between identical
+  // copies and the redo stack was wiped by the next push.
+  const historyRef = useRef([cloneForHistory([], [])]);
+  const historyIndexRef = useRef(0);
+  const [historyPos, setHistoryPos] = useState({ index: 0, length: 1 });
   const isUndoRedoing = useRef(false);
   const pushTimerRef = useRef(null);
-  const skipNextPush = useRef(false); // set by auto-layout to suppress one debounced push
 
-  const canUndo = historyIndex > 0;
-  const canRedo = historyIndex < historyRef.current.length - 1;
+  const canUndo = historyPos.index > 0;
+  const canRedo = historyPos.index < historyPos.length - 1;
 
-  // Debounced push: after changes settle, push a snapshot to history
-  const schedulePush = useCallback(() => {
-    if (pushTimerRef.current) clearTimeout(pushTimerRef.current);
-    pushTimerRef.current = setTimeout(() => {
-      if (isUndoRedoing.current) return;
-      if (skipNextPush.current) {
-        skipNextPush.current = false;
-        return;
-      }
+  const syncHistoryPos = useCallback(() => {
+    setHistoryPos({ index: historyIndexRef.current, length: historyRef.current.length });
+  }, []);
 
-      const currentSnapshot = cloneForHistory(nodes, edges);
+  // Append a snapshot after the current position (drops the redo branch).
+  // Skipped when identical to the current entry.
+  const pushHistory = useCallback(
+    (snapshot) => {
+      const current = historyRef.current[historyIndexRef.current];
+      if (current && current.sig === snapshot.sig) return;
+      const next = [
+        ...historyRef.current.slice(0, historyIndexRef.current + 1),
+        snapshot,
+      ].slice(-MAX_HISTORY);
+      historyRef.current = next;
+      historyIndexRef.current = next.length - 1;
+      syncHistoryPos();
+    },
+    [syncHistoryPos]
+  );
 
-      historyRef.current = [
-        ...historyRef.current.slice(0, historyIndex + 1),
-        currentSnapshot,
-      ];
+  const cancelPendingPush = useCallback(() => {
+    if (pushTimerRef.current) {
+      clearTimeout(pushTimerRef.current);
+      pushTimerRef.current = null;
+    }
+  }, []);
 
-      // Trim if over max
-      if (historyRef.current.length > MAX_HISTORY) {
-        historyRef.current = historyRef.current.slice(-MAX_HISTORY);
-      }
-
-      setHistoryIndex(historyRef.current.length - 1);
-    }, HISTORY_DEBOUNCE);
-  }, [nodes, edges, historyIndex]);
-
-  // Watch for changes and schedule history push
+  // Debounced push: once changes settle, record a snapshot
   useEffect(() => {
     if (isUndoRedoing.current) return;
-    schedulePush();
-  }, [nodes, edges, schedulePush]);
+    cancelPendingPush();
+    pushTimerRef.current = setTimeout(() => {
+      pushTimerRef.current = null;
+      if (isUndoRedoing.current) return;
+      pushHistory(cloneForHistory(nodes, edges));
+    }, HISTORY_DEBOUNCE);
+  }, [nodes, edges, pushHistory, cancelPendingPush]);
+
+  // Record changes still waiting in the debounce (e.g. Ctrl+Z right after a
+  // drag) so undo/redo/layout act on the latest state, not a stale timer.
+  const flushPendingPush = useCallback(() => {
+    if (!pushTimerRef.current || isUndoRedoing.current) return;
+    cancelPendingPush();
+    pushHistory(cloneForHistory(nodes, edges));
+  }, [nodes, edges, pushHistory, cancelPendingPush]);
+
+  const restoreHistory = useCallback(
+    (index) => {
+      const snapshot = historyRef.current[index];
+      if (!snapshot) return;
+      cancelPendingPush();
+      isUndoRedoing.current = true;
+      setNodes(mergeSnapshot(snapshot.nodes, nodes));
+      setEdges(snapshot.edges);
+      historyIndexRef.current = index;
+      syncHistoryPos();
+      // Reset flag after React commits the update
+      setTimeout(() => { isUndoRedoing.current = false; }, 0);
+    },
+    [nodes, setNodes, setEdges, cancelPendingPush, syncHistoryPos]
+  );
 
   const undo = useCallback(() => {
-    if (historyIndex <= 0) return;
-    const newIndex = historyIndex - 1;
-    const snapshot = historyRef.current[newIndex];
-    if (!snapshot) return;
-
-    isUndoRedoing.current = true;
-    setNodes(mergeSnapshot(snapshot.nodes, nodes));
-    setEdges(snapshot.edges);
-    setHistoryIndex(newIndex);
-    // Reset flag after React commits the update
-    setTimeout(() => { isUndoRedoing.current = false; }, 0);
-  }, [historyIndex, setNodes, setEdges, nodes]);
+    flushPendingPush();
+    if (historyIndexRef.current <= 0) return;
+    restoreHistory(historyIndexRef.current - 1);
+  }, [flushPendingPush, restoreHistory]);
 
   const redo = useCallback(() => {
-    if (historyIndex >= historyRef.current.length - 1) return;
-    const newIndex = historyIndex + 1;
-    const snapshot = historyRef.current[newIndex];
-    if (!snapshot) return;
-
-    isUndoRedoing.current = true;
-    setNodes(mergeSnapshot(snapshot.nodes, nodes));
-    setEdges(snapshot.edges);
-    setHistoryIndex(newIndex);
-    setTimeout(() => { isUndoRedoing.current = false; }, 0);
-  }, [historyIndex, setNodes, setEdges, nodes]);
+    // A real pending edit gets recorded here and drops the redo branch;
+    // a pending selection-only change matches the current entry and doesn't.
+    flushPendingPush();
+    if (historyIndexRef.current >= historyRef.current.length - 1) return;
+    restoreHistory(historyIndexRef.current + 1);
+  }, [flushPendingPush, restoreHistory]);
 
   // Auto-layout: rearrange nodes for optimal readability
   const handleAutoLayout = useCallback(() => {
@@ -174,22 +208,11 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
     // Compute new layout
     const laidOut = autoLayout(nodes, edges);
 
-    // Push BOTH pre- and post-layout snapshots immediately into history
-    // so undo works the instant the layout is applied — no waiting for debounce.
-    const preSnapshot = cloneForHistory(nodes, edges);
-    const postSnapshot = cloneForHistory(laidOut, edges);
-    historyRef.current = [
-      ...historyRef.current.slice(0, historyIndex + 1),
-      preSnapshot,
-      postSnapshot,
-    ];
-    if (historyRef.current.length > MAX_HISTORY) {
-      historyRef.current = historyRef.current.slice(-MAX_HISTORY);
-    }
-    setHistoryIndex(historyRef.current.length - 1);
-
-    // Suppress the next debounced push — we already pushed both snapshots
-    skipNextPush.current = true;
+    // Record pre- and post-layout states right away so undo works the instant
+    // the layout is applied. The debounced push that follows sees the same
+    // state and is skipped.
+    flushPendingPush();
+    pushHistory(cloneForHistory(laidOut, edges));
 
     setNodes(laidOut);
 
@@ -197,7 +220,7 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
     setTimeout(() => {
       reactFlowInstance.fitView({ padding: 0.2, duration: 400 });
     }, 50);
-  }, [nodes, edges, setNodes, reactFlowInstance, historyIndex]);
+  }, [nodes, edges, setNodes, reactFlowInstance, flushPendingPush, pushHistory]);
 
   // Keyboard shortcuts for undo/redo/auto-layout
   useEffect(() => {
@@ -235,6 +258,7 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
       // Boards saved before 4-handle nodes have edges without handle ids
       const migratedEdges = normalizeEdges(newEdges);
 
+      cancelPendingPush();
       isUndoRedoing.current = true;
       setNodes(newNodes);
       setEdges(migratedEdges);
@@ -243,7 +267,8 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
 
       // Reset history with this as the initial state
       historyRef.current = [cloneForHistory(newNodes, migratedEdges)];
-      setHistoryIndex(0);
+      historyIndexRef.current = 0;
+      syncHistoryPos();
     },
     canUndo,
     canRedo,
