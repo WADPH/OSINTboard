@@ -21,6 +21,7 @@
 - ➕ **Custom fields** — add your own named fields to any node (e.g. *Second name*, *Fake name* on a Person); suggestions per node type
 - 📎 **Attachments** — attach any file to any node (photos/video/audio get previews; documents, archives etc. are downloadable), or drag files from your desktop onto a Media Gallery
 - 📋 **Copy & paste** — `Ctrl+C` / `Ctrl+V` duplicates selected nodes with all their fields and attachments (and the edges between them)
+- 🔲 **Multi-select** — `Ctrl`/`Cmd`+click to add or remove nodes, a selection box by dragging with the **right mouse button** (or `Shift` / `Ctrl`/`Cmd` + left drag; hold `Ctrl` to add to the selection), `Ctrl`/`Cmd`+`A` for all, `Esc` to clear; drag, copy, duplicate or delete the whole selection (toolbar appears with 2+ nodes selected)
 - 🕵️ **Maigret username scanning** — right-click a Username node → **Run Scan** to check the handle across ~500 sites; results render in-app with account badges, profile links, tags, and a downloadable PDF report
 - 🎬 **YouTube embedding** — paste a YouTube URL into an External Link node to render a live video player
 - 💾 **Save/Load** — graphs and attachments are stored on the server (SQLite + files), available from any browser or device
@@ -111,7 +112,7 @@ Graphs saved by older versions in a browser's localStorage are moved to the serv
 4. When done, a **📄 View Results** button appears — click it for the in-app report: account cards with site name, status badge (e.g. *Claimed*), profile link, tags, and extracted identity fields
 5. **⬇ Download PDF** in the popup downloads the generated PDF report
 
-> Scan results and PDFs are stored per scan under `backend/results/<scan_id>/` (gitignored). Right-click the canvas (or long-press on mobile) for the quick-search palette; right-clicking a non-username node shows no menu.
+> Scan results and PDFs are stored per scan under `backend/results/<scan_id>/` (gitignored). Right-click the canvas (or long-press on mobile) for the quick-search palette — right-*drag* draws a selection box instead; right-clicking a non-username node shows no menu.
 
 ### Saving Your Work
 

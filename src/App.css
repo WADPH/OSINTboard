@@ -2968,3 +2968,74 @@ html, body, #root {
     opacity: 1;
   }
 }
+
+/* ==========================================
+   MULTI-SELECTION BAR
+   ========================================== */
+
+.selection-bar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 12px;
+  transform: translateX(-50%);
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #111;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+
+.selection-bar-count {
+  margin-right: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.selection-bar button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #bbb;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.selection-bar button:hover {
+  border-color: #555;
+  background: #2a2a2a;
+  color: #fff;
+}
+
+.selection-bar button.selection-bar-danger:hover {
+  border-color: #e57373;
+  color: #e57373;
+}
+
+.selection-bar button.selection-bar-close {
+  padding: 0 8px;
+  color: #777;
+}
+
+@media (max-width: 768px) {
+  .selection-bar {
+    top: auto;
+    bottom: 16px;
+  }
+}
+
+/* Right-button drag selection box (viewport coordinates) */
+.right-select-box {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  border: 1px solid rgba(79, 195, 247, 0.6);
+  background: rgba(79, 195, 247, 0.08);
+}

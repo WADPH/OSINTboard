@@ -53,6 +53,7 @@ const getId = () => `osint_${++nodeId}`;
 
 const defaultViewport = { x: 0, y: 0, zoom: 1 };
 const SNAP_GRID = 10;
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const MAX_HISTORY = 50;
 const HISTORY_DEBOUNCE = 300; // ms
 
@@ -154,9 +155,29 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
     }
   }, []);
 
-  // Debounced push: once changes settle, record a snapshot
+  // Record history. Continuous edits (dragging, typing) are debounced into
+  // one step once they settle. Adding/removing nodes or edges (paste,
+  // duplicate, delete, connect) is a discrete action: it is recorded right
+  // away as its own step — after first recording the state just before it if
+  // that was still waiting in the debounce — so quick successive actions
+  // don't merge into a single undo.
+  const prevStateRef = useRef({ nodes, edges });
   useEffect(() => {
+    const prev = prevStateRef.current;
+    prevStateRef.current = { nodes, edges };
     if (isUndoRedoing.current) return;
+
+    const structural =
+      prev.nodes.length !== nodes.length || prev.edges.length !== edges.length;
+    if (structural) {
+      if (pushTimerRef.current) {
+        cancelPendingPush();
+        pushHistory(cloneForHistory(prev.nodes, prev.edges));
+      }
+      pushHistory(cloneForHistory(nodes, edges));
+      return;
+    }
+
     cancelPendingPush();
     pushTimerRef.current = setTimeout(() => {
       pushTimerRef.current = null;
@@ -232,11 +253,12 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
   const pointerRef = useRef(null); // last pointer position over the canvas
   const lastPasteRef = useRef({ at: null, repeat: 0 });
 
-  const copySelection = useCallback(() => {
+  // Deep copy of the selected nodes + the edges between them, or null
+  const snapshotSelection = useCallback(() => {
     const selected = nodes.filter((n) => n.selected);
-    if (selected.length === 0) return false;
+    if (selected.length === 0) return null;
     const ids = new Set(selected.map((n) => n.id));
-    clipboardRef.current = structuredClone({
+    return structuredClone({
       nodes: selected.map(({ id, type, position, data, style }) => ({
         id,
         type,
@@ -246,65 +268,107 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
       })),
       edges: edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
     });
-    lastPasteRef.current = { at: null, repeat: 0 };
-    return true;
   }, [nodes, edges]);
 
-  const pasteClipboard = useCallback(() => {
-    const clip = clipboardRef.current;
-    if (!clip || clip.nodes.length === 0 || !reactFlowInstance) return false;
-
-    // Place the copy's top-left corner at the pointer; pasting again without
-    // moving the mouse cascades each copy a bit further.
-    const minX = Math.min(...clip.nodes.map((n) => n.position.x));
-    const minY = Math.min(...clip.nodes.map((n) => n.position.y));
-    const ptr = pointerRef.current;
-    const last = lastPasteRef.current;
-    const samePlace = ptr && last.at && last.at.x === ptr.x && last.at.y === ptr.y;
-    const repeat = samePlace || (!ptr && last.repeat) ? last.repeat + 1 : 0;
-    lastPasteRef.current = { at: ptr, repeat };
-    let origin;
-    if (ptr) {
-      origin = reactFlowInstance.screenToFlowPosition(ptr);
-    } else {
-      origin = { x: minX + 40, y: minY + 40 };
-    }
-    const dx = origin.x - minX + repeat * 30;
-    const dy = origin.y - minY + repeat * 30;
-    const snap = (v) => Math.round(v / SNAP_GRID) * SNAP_GRID;
-
-    const idMap = new Map();
-    const newNodes = clip.nodes.map((n) => {
-      const id = getId();
-      idMap.set(n.id, id);
-      const data = structuredClone(n.data);
-      // A running scan keeps updating only the original node
-      if (data.maigret && data.maigret.status !== 'done') delete data.maigret;
-      return {
-        ...structuredClone(n),
-        id,
-        data,
-        position: { x: snap(n.position.x + dx), y: snap(n.position.y + dy) },
-        selected: true,
-      };
-    });
-    const newEdges = clip.edges.map((e) => ({
-      ...structuredClone(e),
-      id: createEdgeId(),
-      source: idMap.get(e.source),
-      target: idMap.get(e.target),
-      selected: false,
-    }));
-
-    // The pasted copy becomes the selection, ready to be dragged
-    setNodes((nds) =>
-      nds.map((n) => (n.selected ? { ...n, selected: false } : n)).concat(newNodes)
-    );
-    setEdges((eds) =>
-      eds.map((e) => (e.selected ? { ...e, selected: false } : e)).concat(newEdges)
-    );
+  const copySelection = useCallback(() => {
+    const clip = snapshotSelection();
+    if (!clip) return false;
+    clipboardRef.current = clip;
+    lastPasteRef.current = { at: null, repeat: 0 };
     return true;
-  }, [reactFlowInstance, setNodes, setEdges]);
+  }, [snapshotSelection]);
+
+  // Add a copy of `clip` to the board, with fresh ids, as the new selection.
+  // `atPointer`: top-left at the mouse (Ctrl+V); otherwise offset from the
+  // originals (Duplicate button).
+  const insertCopy = useCallback(
+    (clip, { atPointer }) => {
+      if (!clip || clip.nodes.length === 0 || !reactFlowInstance) return false;
+
+      const minX = Math.min(...clip.nodes.map((n) => n.position.x));
+      const minY = Math.min(...clip.nodes.map((n) => n.position.y));
+      const ptr = atPointer ? pointerRef.current : null;
+      let dx;
+      let dy;
+      if (ptr) {
+        // Pasting again without moving the mouse cascades each copy
+        const last = lastPasteRef.current;
+        const samePlace = last.at && last.at.x === ptr.x && last.at.y === ptr.y;
+        const repeat = samePlace ? last.repeat + 1 : 0;
+        lastPasteRef.current = { at: ptr, repeat };
+        const origin = reactFlowInstance.screenToFlowPosition(ptr);
+        dx = origin.x - minX + repeat * 30;
+        dy = origin.y - minY + repeat * 30;
+      } else {
+        dx = 40;
+        dy = 40;
+      }
+      const snap = (v) => Math.round(v / SNAP_GRID) * SNAP_GRID;
+
+      const idMap = new Map();
+      const newNodes = clip.nodes.map((n) => {
+        const id = getId();
+        idMap.set(n.id, id);
+        const data = structuredClone(n.data);
+        // A running scan keeps updating only the original node
+        if (data.maigret && data.maigret.status !== 'done') delete data.maigret;
+        return {
+          ...structuredClone(n),
+          id,
+          data,
+          position: { x: snap(n.position.x + dx), y: snap(n.position.y + dy) },
+          selected: true,
+        };
+      });
+      const newEdges = clip.edges.map((e) => ({
+        ...structuredClone(e),
+        id: createEdgeId(),
+        source: idMap.get(e.source),
+        target: idMap.get(e.target),
+        selected: false,
+      }));
+
+      // The copy becomes the selection, ready to be dragged
+      setNodes((nds) =>
+        nds.map((n) => (n.selected ? { ...n, selected: false } : n)).concat(newNodes)
+      );
+      setEdges((eds) =>
+        eds.map((e) => (e.selected ? { ...e, selected: false } : e)).concat(newEdges)
+      );
+      return true;
+    },
+    [reactFlowInstance, setNodes, setEdges]
+  );
+
+  const pasteClipboard = useCallback(
+    () => insertCopy(clipboardRef.current, { atPointer: true }),
+    [insertCopy]
+  );
+
+  // Duplicate leaves the clipboard alone
+  const duplicateSelection = useCallback(
+    () => insertCopy(snapshotSelection(), { atPointer: false }),
+    [insertCopy, snapshotSelection]
+  );
+
+  const deleteSelection = useCallback(() => {
+    if (!reactFlowInstance) return;
+    reactFlowInstance.deleteElements({
+      nodes: nodes.filter((n) => n.selected),
+      edges: edges.filter((e) => e.selected),
+    });
+  }, [reactFlowInstance, nodes, edges]);
+
+  const selectAll = useCallback(() => {
+    setNodes((nds) => nds.map((n) => (n.selected ? n : { ...n, selected: true })));
+  }, [setNodes]);
+
+  const clearSelection = useCallback(() => {
+    setNodes((nds) => nds.map((n) => (n.selected ? { ...n, selected: false } : n)));
+    setEdges((eds) => eds.map((e) => (e.selected ? { ...e, selected: false } : e)));
+  }, [setNodes, setEdges]);
+
+  const selectedCount = useMemo(() => nodes.filter((n) => n.selected).length, [nodes]);
 
   // Keyboard shortcuts: undo/redo/auto-layout/copy/paste
   useEffect(() => {
@@ -326,6 +390,12 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
         if (pasteClipboard()) e.preventDefault();
         return;
       }
+      if (key === 'a') {
+        // Select every node (instead of the browser selecting page text)
+        e.preventDefault();
+        selectAll();
+        return;
+      }
 
       // e.key is 'Z' (uppercase) while Shift is held, hence `key`
       if (key === 'z' && !e.shiftKey) {
@@ -341,7 +411,19 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [undo, redo, handleAutoLayout, copySelection, pasteClipboard]);
+  }, [undo, redo, handleAutoLayout, copySelection, pasteClipboard, selectAll]);
+
+  // Escape clears the selection (when not typing / not in a popup)
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      if (document.querySelector('.lightbox-overlay, .modal-overlay')) return;
+      clearSelection();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [clearSelection]);
 
   // Expose save/load + undo/redo to parent
   useImperativeHandle(ref, () => ({
@@ -708,6 +790,16 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
 
   // Right-click on a Username node → node context menu
   const handleNodeContextMenu = useCallback((event, node) => {
+    // macOS turns Ctrl+click into a right-click. Ctrl+click is how nodes are
+    // added to the selection, so treat it as that instead of opening menus.
+    if (IS_MAC && event.ctrlKey && event.button === 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      setNodes((nds) =>
+        nds.map((n) => (n.id === node.id ? { ...n, selected: !n.selected } : n))
+      );
+      return;
+    }
     if (node.data?.nodeType !== 'username') return;
     // stopPropagation is REQUIRED: otherwise the event bubbles to the
     // wrapper's onContextMenu and QuickSearch opens on top of this menu.
@@ -718,7 +810,7 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
       x: Math.min(event.clientX, window.innerWidth - 220),
       y: Math.min(event.clientY, window.innerHeight - 160),
     });
-  }, []);
+  }, [setNodes]);
 
   const handleQuickSelect = useCallback(
     (nodeType) => {
@@ -733,10 +825,107 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
     [reactFlowInstance, quickSearchPos, addNodeAtPosition]
   );
 
-  // Right-click on canvas
+  // --- Right-button drag on empty canvas → selection box (like a desktop) ---
+  // A right *click* (no drag) still opens quick-search. Browsers fire
+  // `contextmenu` on mousedown (Linux/macOS) or on mouseup (Windows), so the
+  // menu is decided on mouseup and the native event is swallowed meanwhile.
+  const [rightBox, setRightBox] = useState(null); // { x1, y1, x2, y2 } client px
+  const rightPressRef = useRef(null); // { x, y, additive, base:Set, moved }
+  const suppressMenuUntil = useRef(0);
+  const RIGHT_DRAG_THRESHOLD = 4;
+
+  const selectInBox = useCallback(
+    (box, additive, base) => {
+      if (!reactFlowInstance) return;
+      const a = reactFlowInstance.screenToFlowPosition({ x: Math.min(box.x1, box.x2), y: Math.min(box.y1, box.y2) });
+      const b = reactFlowInstance.screenToFlowPosition({ x: Math.max(box.x1, box.x2), y: Math.max(box.y1, box.y2) });
+      // Partial overlap counts (same as SelectionMode.Partial)
+      const hit = (n) => {
+        const p = n.positionAbsolute ?? n.position;
+        const w = n.width ?? 0;
+        const h = n.height ?? 0;
+        return p.x < b.x && p.x + w > a.x && p.y < b.y && p.y + h > a.y;
+      };
+      setNodes((nds) =>
+        nds.map((n) => {
+          const selected = hit(n) || (additive && base.has(n.id));
+          return n.selected === selected ? n : { ...n, selected };
+        })
+      );
+      if (!additive) {
+        setEdges((eds) => eds.map((e) => (e.selected ? { ...e, selected: false } : e)));
+      }
+    },
+    [reactFlowInstance, setNodes, setEdges]
+  );
+
+  const handleRightMouseDown = useCallback(
+    (event) => {
+      if (event.button !== 2 || isMobile) return;
+      // Only on empty canvas — right-click on a node/edge keeps its own menu.
+      // (Nodes and edges live *inside* .react-flow__pane, so exclude them.)
+      if (!event.target.closest?.('.react-flow__pane')) return;
+      if (
+        event.target.closest(
+          '.react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__nodesselection, .osint-edge-label, .react-flow__controls, .react-flow__minimap, .react-flow__panel'
+        )
+      ) {
+        return;
+      }
+      rightPressRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        additive: event.ctrlKey || event.metaKey || event.shiftKey,
+        base: new Set(nodes.filter((n) => n.selected).map((n) => n.id)),
+        moved: false,
+      };
+    },
+    [isMobile, nodes]
+  );
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const press = rightPressRef.current;
+      if (!press) return;
+      if (!press.moved) {
+        if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < RIGHT_DRAG_THRESHOLD) return;
+        press.moved = true;
+      }
+      const box = { x1: press.x, y1: press.y, x2: e.clientX, y2: e.clientY };
+      setRightBox(box);
+      selectInBox(box, press.additive, press.base);
+    };
+    const onUp = (e) => {
+      const press = rightPressRef.current;
+      if (!press || e.button !== 2) return;
+      rightPressRef.current = null;
+      setRightBox(null);
+      // Swallow the contextmenu Windows fires right after mouseup
+      suppressMenuUntil.current = Date.now() + 400;
+      if (!press.moved) openQuickSearch(press.x, press.y);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape' && rightPressRef.current) {
+        rightPressRef.current = null;
+        setRightBox(null);
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [selectInBox, openQuickSearch]);
+
+  // Right-click on canvas (or the keyboard Menu key): quick-search.
+  // Mouse right-clicks on the pane are handled on mouseup (see above).
   const handleContextMenu = useCallback(
     (event) => {
       event.preventDefault();
+      if (rightPressRef.current || Date.now() < suppressMenuUntil.current) return;
       openQuickSearch(event.clientX, event.clientY);
     },
     [openQuickSearch]
@@ -839,6 +1028,7 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
       onMouseDown={handleWrapperMouseDown}
       onMouseMove={(e) => { pointerRef.current = { x: e.clientX, y: e.clientY }; }}
       onMouseLeave={() => { pointerRef.current = null; }}
+      onMouseDownCapture={handleRightMouseDown}
       onContextMenu={handleContextMenu}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
@@ -941,6 +1131,36 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
         </button>
       </div>
 
+      {rightBox && (
+        <div
+          className="right-select-box"
+          style={{
+            left: Math.min(rightBox.x1, rightBox.x2),
+            top: Math.min(rightBox.y1, rightBox.y2),
+            width: Math.abs(rightBox.x2 - rightBox.x1),
+            height: Math.abs(rightBox.y2 - rightBox.y1),
+          }}
+        />
+      )}
+
+      {selectedCount > 1 && (
+        <div className="selection-bar">
+          <span className="selection-bar-count">{selectedCount} selected</span>
+          <button onClick={copySelection} title="Copy (Ctrl+C), paste with Ctrl+V">
+            Copy
+          </button>
+          <button onClick={duplicateSelection} title="Duplicate">
+            Duplicate
+          </button>
+          <button className="selection-bar-danger" onClick={deleteSelection} title="Delete (Del)">
+            Delete
+          </button>
+          <button className="selection-bar-close" onClick={clearSelection} title="Clear selection (Esc)">
+            ✕
+          </button>
+        </div>
+      )}
+
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -973,6 +1193,10 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
         snapToGrid
         snapGrid={[SNAP_GRID, SNAP_GRID]}
         selectionMode={SelectionMode.Partial}
+        // Ctrl (Windows/Linux) or Cmd (macOS) + click adds/removes nodes;
+        // Shift or Ctrl/Cmd + drag on empty canvas draws a selection box.
+        multiSelectionKeyCode={['Control', 'Meta']}
+        selectionKeyCode={['Shift', 'Control', 'Meta']}
         deleteKeyCode={['Delete', 'Backspace']}
         fitView={false}
         minZoom={0.1}
