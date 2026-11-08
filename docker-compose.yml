@@ -2,10 +2,14 @@
 #
 #   docker compose up -d --build     # build and start
 #   docker compose logs -f           # follow logs
-#   docker compose down              # stop (scan results stay in the volume)
+#   docker compose down              # stop (data stays in the folders below)
 #
 # The app is served at http://localhost:8080 (override with OSINTBOARD_PORT).
-# Graphs remain in the browser; the backend only runs username scans.
+#
+# Data lives in bind-mounted folders next to this file (git-ignored):
+#   ./osintboard-data/     graphs database (SQLite) + uploaded attachments
+#   ./osintboard-results/  maigret scan results and PDF reports
+# Back up both folders to back up everything.
 
 name: osintboard
 
@@ -17,7 +21,12 @@ services:
       # A container should stay up between scans.
       OSINTBOARD_IDLE_TIMEOUT: "0"
       PORT: "8000"
+      OSINTBOARD_DATA_DIR: /app/data
+      # Max size of one attachment upload (nginx allows up to 110 MB)
+      OSINTBOARD_MAX_MEDIA_MB: "100"
     volumes:
+      # Graphs database + attachment files.
+      - ./osintboard-data/:/app/data
       # Scan results and PDFs survive restarts/redeploys.
       - ./osintboard-results/:/app/results
     restart: unless-stopped

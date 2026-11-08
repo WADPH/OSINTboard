@@ -26,6 +26,11 @@ dist-ssr
 # Python backend
 backend/.venv/
 backend/results/
+backend/data/
+
+# Docker Compose data folders (graphs DB, attachments, scan results)
+osintboard-data/
+osintboard-results/
 __pycache__/
 # Scan artifacts: reports + logs can contain a scanned subject's identifying
 # data on top of local filesystem paths.

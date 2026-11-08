@@ -54,8 +54,9 @@ RUN apt-get update \
 
 COPY main.py .
 
-# Results are persisted in a named volume (see docker-compose.yml).
-RUN mkdir -p /app/results
+# Scan results and the graphs database/attachments are bind-mounted from the
+# project folder (see docker-compose.yml).
+RUN mkdir -p /app/results /app/data
 
 EXPOSE 8000
 

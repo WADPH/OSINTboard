@@ -109,7 +109,7 @@ export const NODE_TYPES = [
     label: 'Media',
     icon: '🖼️',
     color: '#ba68c8',
-    description: 'Photo, video, and audio gallery',
+    description: 'Photos, video, audio and files',
   },
 ];
 

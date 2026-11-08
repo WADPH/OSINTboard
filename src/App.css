@@ -942,6 +942,13 @@ html, body, #root {
   color: #666;
 }
 
+/* While an edge is selected its ends can be dragged to re-attach it. Edges
+   sit behind nodes, so the node handles at the same spot would swallow that
+   drag — let the mouse pass through them until the edge is deselected. */
+.canvas-wrapper--edge-selected .react-flow__handle.osint-handle {
+  pointer-events: none;
+}
+
 /* Endpoints of a selected edge can be dragged to re-attach it */
 .react-flow__edge.selected .react-flow__edgeupdater {
   fill: var(--accent);
@@ -2533,5 +2540,431 @@ html, body, #root {
   .osint-node--has-video {
     min-width: 280px;
     max-width: 380px;
+  }
+}
+
+/* ==========================================
+   CUSTOM FIELDS (user-defined, any node)
+   ========================================== */
+
+.custom-fields-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.custom-field-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  background: #161616;
+}
+
+.custom-field-edit-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.osint-node-input.custom-field-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #aaa);
+}
+
+.osint-node-input.custom-field-name-input::placeholder {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: #555;
+}
+
+.osint-node-input.custom-field-value-input {
+  font-size: 12px;
+}
+
+.custom-field-remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #666;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.custom-field-remove:hover {
+  background: #2a1515;
+  color: #e57373;
+}
+
+.custom-fields-add-btn {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px dashed #444;
+  border-radius: 4px;
+  background: transparent;
+  color: #888;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.custom-fields-add-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.custom-fields-view {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid #262626;
+}
+
+.custom-fields-view:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.custom-field-row {
+  display: grid;
+  /* name column hugs its text (max half the node), value takes the rest */
+  grid-template-columns: fit-content(50%) minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.custom-field-row dt {
+  overflow: hidden;
+  color: var(--text-secondary, #888);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-field-row dd {
+  margin: 0;
+  color: #ddd;
+  word-break: break-word;
+}
+
+/* Timeline: fields block between header and bar */
+.timeline-node-fields {
+  padding: 0 12px;
+}
+
+.timeline-node-fields:empty {
+  display: none;
+}
+
+.timeline-node-fields .custom-fields-view {
+  border-top: none;
+  padding-top: 0;
+}
+
+.timeline-node-fields .custom-fields-editor {
+  padding-top: 8px;
+}
+
+/* Media gallery: highlight while files are dragged over it */
+.media-node.media-node--dragover {
+  outline: 2px dashed #ba68c8;
+  outline-offset: 3px;
+}
+
+.media-node-uploading {
+  margin-top: 6px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.media-attachments-add-btn:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+/* ==========================================
+   LOCATION: coordinates + mini map (Address / Place)
+   ========================================== */
+
+.coords-input {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.osint-node-input.coords-input-field {
+  font-size: 12px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.coords-input-hint {
+  font-size: 10px;
+  color: var(--text-muted, #666);
+}
+
+.coords-input-hint--ok {
+  color: #81c784;
+}
+
+.coords-input-hint--bad {
+  color: #e57373;
+}
+
+.map-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.map-preview-frame {
+  position: relative;
+  overflow: hidden;
+  height: 140px;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: #1a1a1a;
+}
+
+.map-preview-frame {
+  /* Static preview: let canvas pan/zoom and node drag pass through */
+  pointer-events: none;
+}
+
+.map-preview-tile {
+  position: absolute;
+  width: 256px;
+  height: 256px;
+  max-width: none;
+  /* Dim the bright OSM tiles to sit better on the dark board */
+  filter: brightness(0.82) contrast(1.05) saturate(0.9);
+  user-select: none;
+}
+
+.map-preview-marker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #e53935;
+  box-shadow: 0 0 0 3px rgba(229, 57, 53, 0.35), 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.map-preview-attribution {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  padding: 1px 4px;
+  border-top-left-radius: 3px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #bbb;
+  font-size: 8px;
+  line-height: 11px;
+}
+
+.map-preview-coords {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-secondary, #aaa);
+  user-select: text;
+}
+
+.map-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.map-preview-btn {
+  padding: 3px 8px;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #1a1a1a;
+  color: #ccc;
+  font-size: 11px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.map-preview-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ==========================================
+   GENERIC FILE ATTACHMENTS + DOWNLOADS
+   ========================================== */
+
+/* Edit-mode grid: file card */
+.media-attachment-file {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 80px;
+  cursor: pointer;
+}
+
+.media-attachment-file-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.media-attachment-file-size {
+  font-size: 9px;
+  color: #777;
+}
+
+.media-attachment-download {
+  position: absolute;
+  top: 2px;
+  right: 24px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.media-attachment-item:hover .media-attachment-download {
+  opacity: 1;
+}
+
+.media-attachment-download:hover {
+  background: var(--accent);
+  color: #000;
+}
+
+/* Media gallery node */
+.media-node-gallery-item {
+  position: relative;
+}
+
+.media-node-gallery-file {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 100px;
+  padding: 6px;
+  text-align: center;
+}
+
+.media-node-gallery-file-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.media-node-gallery-file .media-node-gallery-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-node-gallery-size {
+  font-size: 9px;
+  color: #777;
+}
+
+.media-node-gallery-download {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 12px;
+  line-height: 22px;
+  text-align: center;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.media-node-gallery-item:hover .media-node-gallery-download {
+  opacity: 1;
+}
+
+.media-node-gallery-download:hover {
+  background: var(--accent);
+  color: #000;
+}
+
+/* Lightbox */
+.lightbox-file {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 220px;
+  height: 180px;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #151515;
+}
+
+.lightbox-file-icon {
+  font-size: 72px;
+  line-height: 1;
+}
+
+.lightbox-size {
+  color: #666;
+}
+
+.lightbox-download {
+  padding: 6px 16px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #ddd;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.lightbox-download:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Touch screens have no hover: keep download/remove buttons visible */
+@media (hover: none) {
+  .media-attachment-download,
+  .media-attachment-remove,
+  .media-node-gallery-download {
+    opacity: 1;
   }
 }

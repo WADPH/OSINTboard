@@ -20,6 +20,7 @@ import TimelineNode from './TimelineNode';
 import MediaNode from './MediaNode';
 import OsintEdge from './OsintEdge';
 import { EdgeUIContext } from './edgeContext';
+import { NodeStateContext } from './nodeHooks';
 import QuickSearch from './QuickSearch';
 import NodeContextMenu from './NodeContextMenu';
 import MaigretReport from './MaigretReport';
@@ -106,6 +107,7 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
   const [isConnecting, setIsConnecting] = useState(false); // shows all handles while dragging
   const reconnectingEdgeId = useRef(null);
   const edgeUI = useMemo(() => ({ editingEdgeId, setEditingEdgeId }), [editingEdgeId]);
+  const edgeSelected = edges.some((e) => e.selected);
 
   // --- Undo / Redo system ---
   // History lives in refs (read by timers/handlers); `historyPos` mirrors the
@@ -222,26 +224,124 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
     }, 50);
   }, [nodes, edges, setNodes, reactFlowInstance, flushPendingPush, pushHistory]);
 
-  // Keyboard shortcuts for undo/redo/auto-layout
+  // --- Copy / paste nodes (Ctrl+C / Ctrl+V) ---
+  // Copies the selected nodes with everything in their data (custom fields,
+  // attachments, coordinates…) plus the edges between them. Attachments are
+  // shared by reference (same server file), which the media GC accounts for.
+  const clipboardRef = useRef(null); // { nodes, edges } — deep copies
+  const pointerRef = useRef(null); // last pointer position over the canvas
+  const lastPasteRef = useRef({ at: null, repeat: 0 });
+
+  const copySelection = useCallback(() => {
+    const selected = nodes.filter((n) => n.selected);
+    if (selected.length === 0) return false;
+    const ids = new Set(selected.map((n) => n.id));
+    clipboardRef.current = structuredClone({
+      nodes: selected.map(({ id, type, position, data, style }) => ({
+        id,
+        type,
+        position,
+        data,
+        style,
+      })),
+      edges: edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
+    });
+    lastPasteRef.current = { at: null, repeat: 0 };
+    return true;
+  }, [nodes, edges]);
+
+  const pasteClipboard = useCallback(() => {
+    const clip = clipboardRef.current;
+    if (!clip || clip.nodes.length === 0 || !reactFlowInstance) return false;
+
+    // Place the copy's top-left corner at the pointer; pasting again without
+    // moving the mouse cascades each copy a bit further.
+    const minX = Math.min(...clip.nodes.map((n) => n.position.x));
+    const minY = Math.min(...clip.nodes.map((n) => n.position.y));
+    const ptr = pointerRef.current;
+    const last = lastPasteRef.current;
+    const samePlace = ptr && last.at && last.at.x === ptr.x && last.at.y === ptr.y;
+    const repeat = samePlace || (!ptr && last.repeat) ? last.repeat + 1 : 0;
+    lastPasteRef.current = { at: ptr, repeat };
+    let origin;
+    if (ptr) {
+      origin = reactFlowInstance.screenToFlowPosition(ptr);
+    } else {
+      origin = { x: minX + 40, y: minY + 40 };
+    }
+    const dx = origin.x - minX + repeat * 30;
+    const dy = origin.y - minY + repeat * 30;
+    const snap = (v) => Math.round(v / SNAP_GRID) * SNAP_GRID;
+
+    const idMap = new Map();
+    const newNodes = clip.nodes.map((n) => {
+      const id = getId();
+      idMap.set(n.id, id);
+      const data = structuredClone(n.data);
+      // A running scan keeps updating only the original node
+      if (data.maigret && data.maigret.status !== 'done') delete data.maigret;
+      return {
+        ...structuredClone(n),
+        id,
+        data,
+        position: { x: snap(n.position.x + dx), y: snap(n.position.y + dy) },
+        selected: true,
+      };
+    });
+    const newEdges = clip.edges.map((e) => ({
+      ...structuredClone(e),
+      id: createEdgeId(),
+      source: idMap.get(e.source),
+      target: idMap.get(e.target),
+      selected: false,
+    }));
+
+    // The pasted copy becomes the selection, ready to be dragged
+    setNodes((nds) =>
+      nds.map((n) => (n.selected ? { ...n, selected: false } : n)).concat(newNodes)
+    );
+    setEdges((eds) =>
+      eds.map((e) => (e.selected ? { ...e, selected: false } : e)).concat(newEdges)
+    );
+    return true;
+  }, [reactFlowInstance, setNodes, setEdges]);
+
+  // Keyboard shortcuts: undo/redo/auto-layout/copy/paste
   useEffect(() => {
     const onKeyDown = (e) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
+      // Typing in a field: leave Ctrl+Z/C/V/… to the browser (text undo,
+      // copy/paste of text) instead of acting on the board.
+      if (e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      const key = e.key.toLowerCase();
 
-      if (e.key === 'z' && !e.shiftKey) {
+      if (key === 'c') {
+        // Selected text (e.g. in a node) is copied as text, not as nodes
+        if (window.getSelection()?.toString()) return;
+        if (copySelection()) e.preventDefault();
+        return;
+      }
+      if (key === 'v') {
+        if (pasteClipboard()) e.preventDefault();
+        return;
+      }
+
+      // e.key is 'Z' (uppercase) while Shift is held, hence `key`
+      if (key === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
-      } else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') {
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
         e.preventDefault();
         redo();
-      } else if (e.key === 'l') {
+      } else if (key === 'l') {
         e.preventDefault();
         handleAutoLayout();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [undo, redo, handleAutoLayout]);
+  }, [undo, redo, handleAutoLayout, copySelection, pasteClipboard]);
 
   // Expose save/load + undo/redo to parent
   useImperativeHandle(ref, () => ({
@@ -729,13 +829,16 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
   }, []);
 
   return (
+    <NodeStateContext.Provider value={setNodes}>
     <EdgeUIContext.Provider value={edgeUI}>
     <div
-      className={`canvas-wrapper ${isConnecting ? 'canvas-wrapper--connecting' : ''}`}
+      className={`canvas-wrapper ${isConnecting ? 'canvas-wrapper--connecting' : ''} ${edgeSelected ? 'canvas-wrapper--edge-selected' : ''}`}
       ref={reactFlowWrapper}
       tabIndex={-1}
       onKeyDown={handleKeyDown}
       onMouseDown={handleWrapperMouseDown}
+      onMouseMove={(e) => { pointerRef.current = { x: e.clientX, y: e.clientY }; }}
+      onMouseLeave={() => { pointerRef.current = null; }}
       onContextMenu={handleContextMenu}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
@@ -853,9 +956,11 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
         isValidConnection={isValidConnection}
         connectionMode={ConnectionMode.Loose}
         connectionLineType={ConnectionLineType.SmoothStep}
-        // A selected edge is drawn above nodes so its end anchors aren't
-        // covered by the node handles sitting at the same spot (reconnect).
-        elevateEdgesOnSelect
+        // Edges always stay BEHIND nodes (no elevateEdgesOnSelect — it lifted
+        // a selected node's edges above every other node). To keep reconnect
+        // usable, handles stop catching the mouse while an edge is selected
+        // (see .canvas-wrapper--edge-selected) and the end anchors are larger.
+        reconnectRadius={16}
         edgeTypes={edgeTypes}
         onInit={setReactFlowInstance}
         onDrop={onDrop}
@@ -909,6 +1014,7 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
       </ReactFlow>
     </div>
     </EdgeUIContext.Provider>
+    </NodeStateContext.Provider>
   );
 });
 

@@ -9,6 +9,11 @@ dist-ssr
 # Python backend
 backend/.venv
 backend/results
+backend/data
+
+# Runtime data — must never be baked into an image
+osintboard-data
+osintboard-results
 **/__pycache__
 **/*.pyc
 

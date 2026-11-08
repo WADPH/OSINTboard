@@ -1,72 +1,62 @@
-const STORAGE_KEY = 'osintboard_graphs';
+/**
+ * Graph storage — server-side (SQLite via the backend API).
+ *
+ * Graphs used to live in this browser's localStorage. They are now stored by
+ * the backend, so they survive clearing browser data and are shared by every
+ * browser/device that opens this OSINTboard. Only the "last opened graph" id
+ * stays in localStorage (a per-browser preference).
+ */
+import { apiFetch } from '../utils/api';
+
+const LEGACY_STORAGE_KEY = 'osintboard_graphs';
+const MIGRATED_KEY = 'osintboard_graphs_migrated_to_server';
 const LAST_OPEN_KEY = 'osintboard_last_open';
 
-let idCounter = Date.now();
-const uid = () => `graph_${++idCounter}`;
+const json = (body) => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
 
-export function listGraphs() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const graphs = raw ? JSON.parse(raw) : [];
-    return graphs.map(({ id, name, savedAt }) => ({ id, name, savedAt }));
-  } catch {
-    return [];
-  }
+/** → [{ id, name, savedAt }] newest first */
+export async function listGraphs() {
+  const res = await apiFetch('/graphs');
+  return res.json();
 }
 
-export function saveGraph(name, nodes, edges) {
-  const graphs = loadAll();
-  const now = new Date().toISOString();
-  const existing = graphs.find((g) => g.name === name);
-
-  let graph;
-  if (existing) {
-    existing.nodes = nodes;
-    existing.edges = edges;
-    existing.savedAt = now;
-    graph = existing;
-  } else {
-    graph = { id: uid(), name, nodes, edges, savedAt: now };
-    graphs.push(graph);
-  }
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(graphs));
+/**
+ * Save under `name`; an existing graph with the same name is overwritten.
+ * → { id, name, savedAt }
+ */
+export async function saveGraph(name, nodes, edges) {
+  const res = await apiFetch('/graphs', json({ name, nodes, edges }));
+  const graph = await res.json();
   setLastOpenGraphId(graph.id);
   return graph;
 }
 
-export function loadGraph(id) {
-  const graphs = loadAll();
-  const g = graphs.find((g) => g.id === id);
-  return g || null;
-}
-
-export function deleteGraph(id) {
-  const graphs = loadAll().filter((g) => g.id !== id);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(graphs));
-  // Clear last-open if it was the deleted graph
-  if (getLastOpenGraphId() === id) {
-    clearLastOpenGraph();
+/** → { id, name, savedAt, nodes, edges } or null if it no longer exists */
+export async function loadGraph(id) {
+  try {
+    const res = await apiFetch(`/graphs/${encodeURIComponent(id)}`);
+    return await res.json();
+  } catch (err) {
+    if (/not found|^404/i.test(err.message)) return null;
+    throw err;
   }
 }
 
-export function duplicateGraph(id, newName) {
-  const graphs = loadAll();
-  const src = graphs.find((g) => g.id === id);
-  if (!src) return null;
-  const now = new Date().toISOString();
-  const copy = {
-    ...src,
-    id: uid(),
-    name: newName || `${src.name} (copy)`,
-    savedAt: now,
-  };
-  graphs.push(copy);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(graphs));
-  return copy;
+export async function deleteGraph(id) {
+  await apiFetch(`/graphs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (getLastOpenGraphId() === id) clearLastOpenGraph();
 }
 
-// --- Last-opened graph tracking ---
+/** Throws if the backend is unreachable. */
+export async function checkServer() {
+  await apiFetch('/health');
+}
+
+// --- Last-opened graph (per browser) ---
 
 export function getLastOpenGraphId() {
   try {
@@ -80,7 +70,7 @@ export function setLastOpenGraphId(id) {
   try {
     localStorage.setItem(LAST_OPEN_KEY, id);
   } catch {
-    // localStorage full or unavailable — ignore
+    // storage unavailable — ignore
   }
 }
 
@@ -92,20 +82,68 @@ export function clearLastOpenGraph() {
   }
 }
 
-export function getLastOpenGraph() {
+/** The graph this browser had open last, or null. Throws if the server is down. */
+export async function getLastOpenGraph() {
   const id = getLastOpenGraphId();
   if (!id) return null;
-  return loadGraph(id);
+  const graph = await loadGraph(id);
+  if (!graph) clearLastOpenGraph();
+  return graph;
 }
 
-function loadAll() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+// --- One-time migration of graphs saved by older (browser-only) versions ---
+
+let migration = null;
+
+/**
+ * Upload graphs left in this browser's localStorage to the server, once.
+ * A name already taken on the server gets a " (from browser)" suffix so
+ * nothing is overwritten. The local copy is kept as a backup.
+ * Safe to call repeatedly/concurrently (React StrictMode runs effects twice).
+ * → number of graphs migrated
+ */
+export function migrateLocalGraphs() {
+  if (!migration) migration = runMigration();
+  return migration;
 }
+
+async function runMigration() {
+  let local;
+  try {
+    if (localStorage.getItem(MIGRATED_KEY)) return 0;
+    local = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || '[]');
+  } catch {
+    return 0;
+  }
+  if (!Array.isArray(local) || local.length === 0) {
+    try {
+      localStorage.setItem(MIGRATED_KEY, new Date().toISOString());
+    } catch {
+      // ignore
+    }
+    return 0;
+  }
+
+  const taken = new Set((await listGraphs()).map((g) => g.name));
+  const lastOpen = getLastOpenGraphId();
+  let count = 0;
+  for (const g of local) {
+    if (!g || !Array.isArray(g.nodes) || !Array.isArray(g.edges)) continue;
+    let name = String(g.name || 'Untitled').slice(0, 180);
+    if (taken.has(name)) name = `${name} (from browser)`;
+    let suffix = 2;
+    while (taken.has(name)) name = `${g.name} (from browser ${suffix++})`;
+    taken.add(name);
+    const res = await apiFetch('/graphs', json({ name, nodes: g.nodes, edges: g.edges }));
+    const saved = await res.json();
+    if (g.id === lastOpen) setLastOpenGraphId(saved.id);
+    count += 1;
+  }
+  localStorage.setItem(MIGRATED_KEY, new Date().toISOString());
+  return count;
+}
+
+// --- File export / import (unchanged format) ---
 
 export function exportGraphToFile(name, nodes, edges) {
   const data = { name, nodes, edges, exportedAt: new Date().toISOString() };
@@ -135,7 +173,7 @@ export function importGraphFromFile(file) {
           edges: data.edges,
           name: data.name || null,
         });
-      } catch (e) {
+      } catch {
         reject(new Error('Invalid JSON file'));
       }
     };

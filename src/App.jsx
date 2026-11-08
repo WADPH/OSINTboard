@@ -10,6 +10,8 @@ import {
   clearLastOpenGraph,
   exportGraphToFile,
   importGraphFromFile,
+  migrateLocalGraphs,
+  checkServer,
 } from './data/graphStore';
 import './App.css';
 
@@ -61,9 +63,11 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
+  const toastTimer = useRef(null);
   const showToast = useCallback((message, type) => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 2500);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), type === 'error' ? 5000 : 2500);
   }, []);
   const [pendingNodeType, setPendingNodeType] = useState(null);
   const [isMobile, setIsMobile] = useState(
@@ -72,16 +76,39 @@ function App() {
   const canvasRef = useRef(null);
   const importInputRef = useRef(null);
 
-  // On mount: load last-open graph, or show demo if nothing saved yet
+  // On mount: move graphs from older browser-only versions to the server,
+  // then open the last-open graph (or the demo if there is none).
   useEffect(() => {
-    const lastGraph = getLastOpenGraph();
-    if (lastGraph) {
-      canvasRef.current?.loadSnapshot(lastGraph.nodes, lastGraph.edges);
-      setGraphName(lastGraph.name);
-    } else {
-      // First launch — show demo
-      canvasRef.current?.loadSnapshot(DEMO_NODES, DEMO_EDGES);
-    }
+    let cancelled = false;
+    (async () => {
+      let migrated = 0;
+      let lastGraph = null;
+      let serverError = null;
+      try {
+        migrated = await migrateLocalGraphs();
+        lastGraph = await getLastOpenGraph();
+        // Nothing to load → nothing has hit the server yet; check it anyway so
+        // an outage shows up now, not on the first save.
+        if (!lastGraph) await checkServer();
+      } catch (err) {
+        serverError = err;
+      }
+      if (cancelled) return;
+      if (lastGraph) {
+        canvasRef.current?.loadSnapshot(lastGraph.nodes, lastGraph.edges);
+        setGraphName(lastGraph.name);
+      } else {
+        canvasRef.current?.loadSnapshot(DEMO_NODES, DEMO_EDGES);
+      }
+      if (serverError) {
+        showToast(`Can't reach the server — graphs can't be loaded or saved (${serverError.message})`, 'error');
+      } else if (migrated > 0) {
+        showToast(`Moved ${migrated} graph${migrated > 1 ? 's' : ''} from this browser to the server`, 'success');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track viewport size for mobile detection
@@ -126,13 +153,18 @@ function App() {
   }, []);
 
   const handleSave = useCallback(
-    (name) => {
+    async (name) => {
       const snapshot = canvasRef.current?.getSnapshot();
       if (!snapshot) return;
-      saveGraph(name, snapshot.nodes, snapshot.edges);
-      setGraphName(name);
+      try {
+        await saveGraph(name, snapshot.nodes, snapshot.edges);
+        setGraphName(name);
+        showToast('Saved', 'success');
+      } catch (err) {
+        showToast(`Save failed: ${err.message}`, 'error');
+      }
     },
-    []
+    [showToast]
   );
 
   // Quick-save / Save: use the current board name if it has one,
@@ -140,21 +172,11 @@ function App() {
   const handleSaveCurrent = useCallback((e) => {
     e?.currentTarget?.blur();
     if (graphName && graphName !== 'Untitled') {
-      const snapshot = canvasRef.current?.getSnapshot();
-      if (!snapshot) {
-        showToast('Nothing to save', 'error');
-        return;
-      }
-      try {
-        saveGraph(graphName, snapshot.nodes, snapshot.edges);
-        showToast('Saved', 'success');
-      } catch {
-        showToast('Save failed', 'error');
-      }
+      handleSave(graphName);
     } else {
       openModal('save');
     }
-  }, [graphName, openModal, showToast]);
+  }, [graphName, openModal, handleSave]);
 
   const handleLoad = useCallback(
     (nodes, edges, name, graphId) => {

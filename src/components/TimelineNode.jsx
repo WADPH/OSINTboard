@@ -1,6 +1,9 @@
-import { memo, useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { memo, useState, useMemo, useCallback, useRef } from 'react';
 import { useEdges, useNodes, useReactFlow } from 'reactflow';
 import NodeHandles from './NodeHandles';
+import { useUpdateNodeData, useClickOutside } from './nodeHooks';
+import { CustomFieldsEditor, CustomFieldsView } from './CustomFields';
+import { cleanFields } from '../utils/customFields';
 import { NODE_TYPE_MAP } from '../data/nodeTypes';
 
 const TIMELINE_WIDTH = 520;
@@ -31,48 +34,39 @@ const TimelineNode = memo(({ id, data, selected }) => {
   const [localLabel, setLocalLabel] = useState(data.label || '');
   const [localStart, setLocalStart] = useState(data.startDate || '');
   const [localEnd, setLocalEnd] = useState(data.endDate || '');
+  const [fields, setFields] = useState(data.fields || []);
   const [localEntryDate, setLocalEntryDate] = useState('');
 
   const edges = useEdges();
   const nodes = useNodes();
   const { setEdges, getEdges, deleteElements } = useReactFlow();
+  const updateData = useUpdateNodeData(id);
   const nodeRef = useRef(null);
 
   const color = '#4db6ac';
 
-  // Refs for latest local state (used by click-outside handler)
-  const localLabelRef = useRef(localLabel);
-  const localStartRef = useRef(localStart);
-  const localEndRef = useRef(localEnd);
-  localLabelRef.current = localLabel;
-  localStartRef.current = localStart;
-  localEndRef.current = localEnd;
-
-  const commitEditExternal = useCallback(() => {
-    data.label = localLabelRef.current;
-    data.startDate = localStartRef.current;
-    data.endDate = localEndRef.current;
+  const commitEdit = useCallback(() => {
+    updateData({
+      label: localLabel,
+      startDate: localStart,
+      endDate: localEnd,
+      fields: cleanFields(fields),
+    });
     setEditing(false);
-  }, []);
+  }, [localLabel, localStart, localEnd, fields, updateData]);
+
+  // Ignored while editing so a double-click inside an input keeps unsaved text
+  const startEditing = () => {
+    if (editing) return;
+    setLocalLabel(data.label || '');
+    setLocalStart(data.startDate || '');
+    setLocalEnd(data.endDate || '');
+    setFields(data.fields || []);
+    setEditing(true);
+  };
 
   // Dismiss editing when clicking outside the node
-  useEffect(() => {
-    if (!editing) return;
-    const handler = (e) => {
-      if (nodeRef.current && !nodeRef.current.contains(e.target)) {
-        commitEditExternal();
-      }
-    };
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handler);
-      document.addEventListener('touchstart', handler);
-    }, 0);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('mousedown', handler);
-      document.removeEventListener('touchstart', handler);
-    };
-  }, [editing, commitEditExternal]);
+  useClickOutside(nodeRef, editing, commitEdit);
 
   const handleDelete = useCallback(
     (e) => {
@@ -120,13 +114,6 @@ const TimelineNode = memo(({ id, data, selected }) => {
     [hasRange, startMs, endMs]
   );
 
-  const commitEdit = () => {
-    setEditing(false);
-    data.label = localLabel;
-    data.startDate = localStart;
-    data.endDate = localEnd;
-  };
-
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') commitEdit();
     if (e.key === 'Escape') {
@@ -134,6 +121,7 @@ const TimelineNode = memo(({ id, data, selected }) => {
       setLocalLabel(data.label || '');
       setLocalStart(data.startDate || '');
       setLocalEnd(data.endDate || '');
+      setFields(data.fields || []);
     }
   };
 
@@ -184,18 +172,13 @@ const TimelineNode = memo(({ id, data, selected }) => {
       <div
         className="timeline-node-header"
         style={{ borderBottomColor: color + '66' }}
-        onDoubleClick={() => setEditing(true)}
+        onDoubleClick={startEditing}
       >
         <span className="timeline-node-icon">📊</span>
         {editing ? (
           <span
             className="timeline-node-header-editing"
             tabIndex={-1}
-            onBlur={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget)) {
-                commitEdit();
-              }
-            }}
           >
             <input
               className="timeline-node-input"
@@ -247,6 +230,20 @@ const TimelineNode = memo(({ id, data, selected }) => {
           >
             🗑️
           </button>
+        )}
+      </div>
+
+      <div className="timeline-node-fields">
+        {editing ? (
+          <CustomFieldsEditor
+            nodeId={id}
+            nodeType="timeline"
+            fields={fields}
+            onChange={setFields}
+            onKeyDown={handleKeyDown}
+          />
+        ) : (
+          <CustomFieldsView fields={data.fields} />
         )}
       </div>
 

@@ -1,9 +1,15 @@
-import { memo, useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { memo, useState, useMemo, useCallback, useRef } from 'react';
 import { useReactFlow } from 'reactflow';
 import NodeHandles from './NodeHandles';
 import { NODE_TYPE_MAP } from '../data/nodeTypes';
 import MediaAttachments from './MediaAttachments';
 import MediaLightbox from './MediaLightbox';
+import { useUpdateNodeData, useClickOutside } from './nodeHooks';
+import { CustomFieldsEditor, CustomFieldsView } from './CustomFields';
+import { cleanFields } from '../utils/customFields';
+import { mediaUrl, fileIcon } from '../utils/mediaFiles';
+import { parseCoords, formatCoords } from '../utils/geo';
+import MapPreview from './MapPreview';
 
 const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
@@ -37,55 +43,76 @@ function extractYouTubeId(url) {
   return null;
 }
 
+/** Optional coordinates for Address/Place, with live "recognized" feedback. */
+function CoordsInput({ value, onChange, onKeyDown, label }) {
+  const fromField = parseCoords(value);
+  const fromLabel = !value.trim() && parseCoords(label, { strict: true });
+  let hint = 'Optional: lat, lon · DMS · Google Maps / OSM link';
+  let tone = '';
+  if (value.trim()) {
+    hint = fromField ? `✓ ${formatCoords(fromField)}` : 'Not recognized as coordinates';
+    tone = fromField ? 'ok' : 'bad';
+  } else if (fromLabel) {
+    hint = `✓ Found in the text above: ${formatCoords(fromLabel)}`;
+    tone = 'ok';
+  }
+  return (
+    <div className="coords-input">
+      <input
+        className="osint-node-input coords-input-field"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder="Coordinates (optional)"
+      />
+      <div className={`coords-input-hint ${tone ? `coords-input-hint--${tone}` : ''}`}>
+        {hint}
+      </div>
+    </div>
+  );
+}
+
 const OSINTNode = memo(({ id, data, selected }) => {
   const nodeDef = NODE_TYPE_MAP[data.nodeType] || NODE_TYPE_MAP.note;
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(data.label || '');
   const [dateValue, setDateValue] = useState(data.dateValue || '');
   const [personTitle, setPersonTitle] = useState(data.personTitle || '');
-  const [renderTick, setRenderTick] = useState(0);
+  const [fields, setFields] = useState(data.fields || []);
+  const [coordsText, setCoordsText] = useState(data.coords || '');
   const [lightboxItem, setLightboxItem] = useState(null);
   const media = data.media || [];
   const { deleteElements } = useReactFlow();
+  const updateData = useUpdateNodeData(id);
   const nodeRef = useRef(null);
 
   const isPerson = data.nodeType === 'person';
   const isDate = data.nodeType === 'date';
   const isExternalLink = data.nodeType === 'external-link';
+  const isLocation = data.nodeType === 'address' || data.nodeType === 'place';
+
+  // Location nodes: coordinates from the dedicated field, else from the label
+  // itself (e.g. a pasted "40.4093, 49.8671" or a Google Maps link).
+  const coords = useMemo(
+    () =>
+      isLocation
+        ? parseCoords(data.coords) || parseCoords(data.label, { strict: true })
+        : null,
+    [isLocation, data.coords, data.label]
+  );
+  const mapQuery = isLocation ? (data.label || '').trim() : '';
+
+  const commitEdit = useCallback(() => {
+    const patch = { label, fields: cleanFields(fields) };
+    if (isDate) patch.dateValue = dateValue;
+    if (isPerson) patch.personTitle = personTitle;
+    if (isLocation) patch.coords = coordsText.trim();
+    updateData(patch);
+    setEditing(false);
+  }, [label, dateValue, personTitle, fields, coordsText, isDate, isPerson, isLocation, updateData]);
 
   // Dismiss editing when clicking outside the node
-  useEffect(() => {
-    if (!editing) return;
-    const handler = (e) => {
-      if (nodeRef.current && !nodeRef.current.contains(e.target)) {
-        commitEditRef.current();
-      }
-    };
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handler);
-      document.addEventListener('touchstart', handler);
-    }, 0);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('mousedown', handler);
-      document.removeEventListener('touchstart', handler);
-    };
-  }, [editing]);
-
-  // Refs for latest values (used by click-outside handler)
-  const labelRef = useRef(label);
-  const dateRef = useRef(dateValue);
-  const personTitleRef = useRef(personTitle);
-  labelRef.current = label;
-  dateRef.current = dateValue;
-  personTitleRef.current = personTitle;
-
-  const commitEditRef = useRef(() => {
-    data.label = labelRef.current;
-    if (isDate) data.dateValue = dateRef.current;
-    if (isPerson) data.personTitle = personTitleRef.current;
-    setEditing(false);
-  });
+  useClickOutside(nodeRef, editing, commitEdit);
 
   const handleDelete = useCallback(
     (e) => {
@@ -95,34 +122,36 @@ const OSINTNode = memo(({ id, data, selected }) => {
     [id, deleteElements]
   );
 
-  const handleAddMedia = useCallback((item) => {
-    if (!data.media) data.media = [];
-    data.media.push(item);
-    setRenderTick((t) => t + 1);
-  }, [data]);
+  const handleAddMedia = useCallback(
+    (items) => updateData((d) => ({ media: [...(d.media || []), ...items] })),
+    [updateData]
+  );
 
-  const handleRemoveMedia = useCallback((mediaId) => {
-    if (!data.media) return;
-    data.media = data.media.filter((m) => m.id !== mediaId);
-    setRenderTick((t) => t + 1);
-  }, [data]);
+  const handleRemoveMedia = useCallback(
+    (mediaId) =>
+      updateData((d) => ({ media: (d.media || []).filter((m) => m.id !== mediaId) })),
+    [updateData]
+  );
 
   const color = nodeDef.color;
   const youtubeId = useMemo(() => extractYouTubeId(data.label), [data.label]);
 
-  const handleDoubleClick = (e) => {
-    e.stopPropagation();
+  // Load the saved values into the edit form. Ignored while already editing:
+  // a double-click inside an input (to select a word) used to reset the form
+  // and throw away everything typed so far.
+  const startEditing = () => {
+    if (editing) return;
     setLabel(data.label || '');
     setDateValue(data.dateValue || '');
     setPersonTitle(data.personTitle || '');
+    setFields(data.fields || []);
+    setCoordsText(data.coords || '');
     setEditing(true);
   };
 
-  const commitEdit = () => {
-    data.label = label;
-    if (isDate) data.dateValue = dateValue;
-    if (isPerson) data.personTitle = personTitle;
-    setEditing(false);
+  const handleDoubleClick = (e) => {
+    e.stopPropagation();
+    startEditing();
   };
 
   const handleKeyDown = (e) => {
@@ -134,6 +163,8 @@ const OSINTNode = memo(({ id, data, selected }) => {
       setLabel(data.label || '');
       setDateValue(data.dateValue || '');
       setPersonTitle(data.personTitle || '');
+      setFields(data.fields || []);
+      setCoordsText(data.coords || '');
     }
   };
 
@@ -185,7 +216,7 @@ const OSINTNode = memo(({ id, data, selected }) => {
       </div>
       <div className="osint-node-body">
         {isExternalLink && youtubeId && !editing ? (
-          <div className="osint-node-video" onClick={() => setEditing(true)}>
+          <div className="osint-node-video" onClick={startEditing}>
             <div className="osint-node-video-embed">
               <iframe
                 src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(youtubeId)}?autoplay=0&rel=0`}
@@ -198,6 +229,7 @@ const OSINTNode = memo(({ id, data, selected }) => {
             <div className="osint-node-video-url" title={data.label}>
               {data.label}
             </div>
+            <CustomFieldsView fields={data.fields} />
           </div>
         ) : editing ? (
           <div className="osint-node-edit-area">
@@ -235,11 +267,26 @@ const OSINTNode = memo(({ id, data, selected }) => {
                 placeholder="Title, role, or position…"
               />
             )}
+            {isLocation && (
+              <CoordsInput
+                value={coordsText}
+                onChange={setCoordsText}
+                onKeyDown={handleKeyDown}
+                label={label}
+              />
+            )}
             {isExternalLink && (
               <div className="osint-node-url-hint">
                 YouTube links auto-embed a player ↗
               </div>
             )}
+            <CustomFieldsEditor
+              nodeId={id}
+              nodeType={data.nodeType}
+              fields={fields}
+              onChange={setFields}
+              onKeyDown={handleKeyDown}
+            />
             <MediaAttachments
               media={media}
               onAdd={handleAddMedia}
@@ -277,6 +324,8 @@ const OSINTNode = memo(({ id, data, selected }) => {
                   : 'Double-click to edit'}
               </span>
             )}
+            <CustomFieldsView fields={data.fields} />
+            {isLocation && <MapPreview coords={coords} query={mapQuery} />}
             {media.length > 0 && (
               <div className="osint-node-media-preview">
                 {media.slice(0, 4).map((item) => (
@@ -286,10 +335,11 @@ const OSINTNode = memo(({ id, data, selected }) => {
                     onClick={() => setLightboxItem(item)}
                   >
                     {item.type === 'image' && (
-                      <img src={item.url} alt={item.name} />
+                      <img src={mediaUrl(item)} alt={item.name} />
                     )}
-                    {item.type === 'video' && '🎬'}
-                    {item.type === 'audio' && '🎵'}
+                    {item.type !== 'image' && (
+                      <span title={item.name}>{fileIcon(item)}</span>
+                    )}
                   </div>
                 ))}
                 {media.length > 4 && (

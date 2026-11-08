@@ -1,74 +1,32 @@
 import { memo, useRef, useState } from 'react';
 import MediaLightbox from './MediaLightbox';
-
-let mediaIdCounter = 0;
-const nextMediaId = () => `media_${++mediaIdCounter}`;
-
-function classifyMime(mime) {
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'audio';
-  return 'other';
-}
-
-function readFileAsDataURL(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+import { filesToMedia, mediaUrl, mediaDownloadUrl, fileIcon, formatSize } from '../utils/mediaFiles';
 
 const MediaAttachments = memo(({ media = [], onAdd, onRemove }) => {
   const fileInputRef = useRef(null);
   const [error, setError] = useState(null);
   const [lightboxItem, setLightboxItem] = useState(null);
+  const [uploading, setUploading] = useState(false);
 
   const handlePick = () => {
     fileInputRef.current?.click();
   };
 
+  // onAdd receives all picked files at once (one state update)
   const handleFiles = async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const files = Array.from(e.target.files || []);
+    const input = e.target;
     setError(null);
-
-    const oversized = files.filter((f) => f.size > MAX_FILE_SIZE);
-    if (oversized.length > 0) {
-      setError(
-        `Files over 10 MB aren't supported (${oversized.map((f) => f.name).join(', ')})`
-      );
-      e.target.value = '';
-      return;
+    setUploading(true);
+    try {
+      const { items, error: problem } = await filesToMedia(input.files);
+      if (items.length) onAdd(items);
+      if (problem) setError(problem);
+    } finally {
+      setUploading(false);
+      input.value = '';
     }
-
-    for (const file of files) {
-      try {
-        const type = classifyMime(file.type);
-        // Images: use base64 data URL (reliable, survives re-renders)
-        // Videos/audio: use object URL (lighter for large files)
-        const url =
-          type === 'image'
-            ? await readFileAsDataURL(file)
-            : URL.createObjectURL(file);
-
-        onAdd({
-          id: nextMediaId(),
-          type,
-          name: file.name,
-          url,
-          mime: file.type,
-        });
-      } catch {
-        setError(`Failed to read ${file.name}`);
-      }
-    }
-
-    e.target.value = '';
   };
 
   const handleRemove = (mediaId) => {
@@ -87,7 +45,7 @@ const MediaAttachments = memo(({ media = [], onAdd, onRemove }) => {
                   onClick={() => setLightboxItem(item)}
                 >
                   <img
-                    src={item.url}
+                    src={mediaUrl(item)}
                     alt={item.name}
                     className="media-attachment-thumb"
                   />
@@ -96,7 +54,7 @@ const MediaAttachments = memo(({ media = [], onAdd, onRemove }) => {
               {item.type === 'video' && (
                 <div className="media-attachment-preview">
                   <video
-                    src={item.url}
+                    src={mediaUrl(item)}
                     className="media-attachment-thumb"
                     controls
                     preload="metadata"
@@ -105,9 +63,27 @@ const MediaAttachments = memo(({ media = [], onAdd, onRemove }) => {
               )}
               {item.type === 'audio' && (
                 <div className="media-attachment-audio">
-                  <audio src={item.url} controls preload="none" />
+                  <audio src={mediaUrl(item)} controls preload="none" />
                 </div>
               )}
+              {item.type === 'file' && (
+                <div
+                  className="media-attachment-file"
+                  onClick={() => setLightboxItem(item)}
+                  title={item.name}
+                >
+                  <span className="media-attachment-file-icon">{fileIcon(item)}</span>
+                  <span className="media-attachment-file-size">{formatSize(item.size)}</span>
+                </div>
+              )}
+              <a
+                className="media-attachment-download"
+                href={mediaDownloadUrl(item)}
+                download={item.name}
+                title={`Download ${item.name}`}
+              >
+                ⬇
+              </a>
               <button
                 className="media-attachment-remove"
                 title="Remove"
@@ -123,13 +99,18 @@ const MediaAttachments = memo(({ media = [], onAdd, onRemove }) => {
 
       {error && <div className="media-attachments-error">{error}</div>}
 
-      <button className="media-attachments-add-btn" onClick={handlePick}>
-        + {media.length > 0 ? 'Add media' : 'Attach photo / video / audio'}
+      <button
+        className="media-attachments-add-btn"
+        onClick={handlePick}
+        disabled={uploading}
+      >
+        {uploading
+          ? 'Uploading…'
+          : `+ ${media.length > 0 ? 'Add files' : 'Attach files'}`}
       </button>
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,video/*,audio/*"
         multiple
         className="media-attachments-hidden-input"
         onChange={handleFiles}

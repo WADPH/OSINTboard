@@ -18,9 +18,13 @@
 - ↪️ **Reconnect** — select a connection and drag either end to another point or node
 - ⇄ **Auto / Manual routing** — Auto attaches connections to the facing sides of nodes as you move them; Manual keeps the points you chose
 - ✏️ **Inline editing** — double-click any node to edit its label
+- ➕ **Custom fields** — add your own named fields to any node (e.g. *Second name*, *Fake name* on a Person); suggestions per node type
+- 📎 **Attachments** — attach any file to any node (photos/video/audio get previews; documents, archives etc. are downloadable), or drag files from your desktop onto a Media Gallery
+- 📋 **Copy & paste** — `Ctrl+C` / `Ctrl+V` duplicates selected nodes with all their fields and attachments (and the edges between them)
 - 🕵️ **Maigret username scanning** — right-click a Username node → **Run Scan** to check the handle across ~500 sites; results render in-app with account badges, profile links, tags, and a downloadable PDF report
 - 🎬 **YouTube embedding** — paste a YouTube URL into an External Link node to render a live video player
-- 💾 **Save/Load** — persist investigations to browser localStorage, switch between multiple graphs
+- 💾 **Save/Load** — graphs and attachments are stored on the server (SQLite + files), available from any browser or device
+- 🗺️ **Maps** — Address/Place nodes with coordinates show an OpenStreetMap mini map; **Open in Google Maps** for coordinates or a text search
 - 🗑️ **Delete support** — select nodes/edges and press Delete or Backspace
 - 🧭 **Navigation** — scroll to zoom, drag to pan, minimap, zoom controls
 
@@ -68,11 +72,21 @@ Useful commands:
 ```bash
 docker compose logs -f          # follow both containers
 docker compose ps               # status + health
-docker compose down             # stop (keeps scan results)
-docker compose down -v          # stop and delete the results volume
+docker compose down             # stop (data stays in the folders below)
 ```
 
-Scan results and PDFs persist in the `osintboard-results` named volume across restarts and rebuilds. To upgrade after pulling changes, run `docker compose up -d --build` again.
+All data lives in two folders next to `docker-compose.yml` (bind mounts, git-ignored):
+
+| Folder | Contents |
+|---|---|
+| `osintboard-data/` | `osintboard.db` (SQLite: all graphs) + `media/` (uploaded attachments) |
+| `osintboard-results/` | maigret scan results and PDF reports |
+
+They survive restarts, rebuilds and `docker compose down`. **Back up** by copying both folders (stop the stack first, or use `sqlite3 osintboard-data/osintboard.db ".backup backup.db"` for a live copy of the database). To upgrade after pulling changes, run `docker compose up -d --build` again.
+
+> ⚠️ The app has **no login**. Anyone who can reach the web port can read, change and delete every graph. Keep it on a trusted network / VPN, or put it behind a reverse proxy with authentication.
+
+Graphs saved by older versions in a browser's localStorage are moved to the server automatically the first time that browser opens the app (the local copy is kept; a name already taken on the server gets a "(from browser)" suffix).
 
 ---
 
@@ -85,7 +99,7 @@ Scan results and PDFs persist in the `osintboard-results` named volume across re
    - Double-click a connection to add or edit its label
    - Select a connection and drag its end to re-attach it
    - Toggle **⇄ Auto / ✋ Manual** in the top-left toolbar to switch connection routing
-3. **Label nodes** — double-click a node to type your intelligence data
+3. **Label nodes** — double-click a node to type your intelligence data; use **+ Add field** for extra named fields. Enter or a click outside saves, Esc cancels
 4. **Arrange** — drag nodes to reposition; they snap to a 10px grid
 5. **Zoom & pan** — scroll to zoom, drag the canvas background to pan
 
@@ -101,7 +115,18 @@ Scan results and PDFs persist in the `osintboard-results` named volume across re
 
 ### Saving Your Work
 
-Click **Save** in the sidebar, give your graph a name, and it's persisted in your browser's localStorage. **Load** to pick from saved investigations. **New** clears the canvas for a fresh board.
+Click **Save** in the sidebar, give your graph a name, and it's stored on the server — **Load** lists every saved investigation, from any browser. Saving under an existing name overwrites that graph (you're asked first). **New** clears the canvas for a fresh board. Attachments of any file type are uploaded to the server as you add them (up to 100 MB per file; `OSINTBOARD_MAX_MEDIA_MB`). Photos, video and audio show a preview; every attachment has a ⬇ download button. For safety, anything other than images/video/audio (e.g. HTML, SVG, PDF) is only ever served as a download, never opened in the app's page.
+
+**Export** writes the graph to a `.osintboard.json` file. Attachments are referenced, not embedded, so an exported file shows its attachments only on the server it came from.
+
+### Maps (Address & Place)
+
+Double-click an **Address** or **Place** node: besides the text there's an optional **Coordinates** field. It accepts `40.4093, 49.8671`, `40.4093N 49.8671E`, degrees-minutes-seconds (`40°24'33.5"N 49°52'01.6"E`, as copied from Google Maps), Google Maps / OpenStreetMap links and `geo:` URIs — or paste any of those as the node text itself.
+
+- **With coordinates** — the node shows an OpenStreetMap mini map with a pin, plus **Open in Google Maps** and **OSM** buttons.
+- **Text only** — no map; **Open in Google Maps** searches for the text.
+
+Map tiles are loaded from `tile.openstreetmap.org` by the viewer's browser, so OpenStreetMap sees which areas are being viewed.
 
 ### YouTube Links
 
@@ -134,7 +159,7 @@ Drop an **External Link** node, double-click it, and paste a YouTube URL. The no
 
 ```
 backend/
-├── main.py            # FastAPI scan worker: run scan, store results + PDF
+├── main.py            # FastAPI: graphs + attachments storage (SQLite), maigret scans
 ├── requirements.txt   # maigret[pdf]==0.6.6, fastapi, uvicorn
 └── Dockerfile         # Python 3.12 + venv + maigret image
 src/
@@ -147,9 +172,12 @@ src/
 │   ├── Sidebar.jsx        # Node palette + graph management buttons
 │   └── ...
 ├── data/
-│   ├── graphStore.js      # localStorage CRUD (save/load/list/delete)
+│   ├── graphStore.js      # graphs API client (save/load/list/delete, localStorage migration)
 │   └── nodeTypes.js       # Node type definitions (icon, color, label)
 ├── utils/
+│   ├── api.js             # API base path + fetch helper
+│   ├── geo.js             # coordinate parsing, map links, OSM tiles
+│   ├── mediaFiles.js      # attachment upload + URLs
 │   └── maigretApi.js      # /api/maigret client (startScan, getScan, getResults)
 ├── App.jsx                # Root layout, modal state
 ├── App.css                # All dark-theme CAD styles
@@ -171,7 +199,7 @@ docker-compose.yml         # web + backend services
 - **[Maigret](https://github.com/soxoj/maigret) 0.6.6** — username OSINT engine (`maigret[pdf]==0.6.6` pinned in `backend/requirements.txt`)
 - **[uv](https://docs.astral.sh/uv/)** — relocatable project venv
 - **Docker Compose** — optional container install: nginx serves the built app and proxies `/api/` to the maigret container
-- **localStorage** — graph persistence
+- **SQLite** — graph storage (backend); attachments stored as files next to it
 
 ---
 
