@@ -1,5 +1,6 @@
 import { memo, useState, useCallback, useRef, useEffect } from 'react';
-import { Handle, Position, useReactFlow } from 'reactflow';
+import { useReactFlow } from 'reactflow';
+import NodeHandles from './NodeHandles';
 import MediaAttachments from './MediaAttachments';
 
 const MediaNode = memo(({ id, data, selected }) => {
@@ -87,17 +88,7 @@ const MediaNode = memo(({ id, data, selected }) => {
           : `0 0 0 1px ${color}88`,
       }}
     >
-      <Handle
-        type="target"
-        position={Position.Top}
-        style={{
-          background: color,
-          width: 10,
-          height: 10,
-          border: '2px solid #000',
-          top: -5,
-        }}
-      />
+      <NodeHandles color={color} />
 
       <div
         className="media-node-header"
@@ -199,17 +190,6 @@ const MediaNode = memo(({ id, data, selected }) => {
         )}
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        style={{
-          background: color,
-          width: 10,
-          height: 10,
-          border: '2px solid #000',
-          bottom: -5,
-        }}
-      />
     </div>
   );
 });

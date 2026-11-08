@@ -497,6 +497,18 @@ html, body, #root {
   color: #4fc3f7;
 }
 
+.undo-redo-btn.edge-routing-btn {
+  width: auto;
+  padding: 0 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.undo-redo-btn.edge-routing-btn--auto {
+  color: var(--accent);
+  border-color: #4fc3f755;
+}
+
 /* ==========================================
    QUICK SEARCH (right-click / long-press)
    ========================================== */
@@ -829,6 +841,118 @@ html, body, #root {
   stroke: var(--accent);
   stroke-width: 2;
   stroke-dasharray: 5, 5;
+}
+
+/* ==========================================
+   NODE HANDLES — 4 sides, each both in & out.
+   Hidden until the node is hovered/selected or
+   a connection is being dragged.
+   ========================================== */
+
+.react-flow__handle.osint-handle {
+  --handle-size: 12px;
+  box-sizing: border-box;
+  width: var(--handle-size);
+  height: var(--handle-size);
+  min-width: 0;
+  min-height: 0;
+  background: var(--handle-color, #888);
+  border: 2px solid #000;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Larger invisible grab area around each point */
+.react-flow__handle.osint-handle::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+}
+
+.react-flow__handle.osint-handle.react-flow__handle-top    { top: calc(var(--handle-size) / -2); }
+.react-flow__handle.osint-handle.react-flow__handle-bottom { bottom: calc(var(--handle-size) / -2); }
+.react-flow__handle.osint-handle.react-flow__handle-left   { left: calc(var(--handle-size) / -2); }
+.react-flow__handle.osint-handle.react-flow__handle-right  { right: calc(var(--handle-size) / -2); }
+
+.react-flow__node:hover .osint-handle,
+.react-flow__node.selected .osint-handle,
+.canvas-wrapper--connecting .osint-handle {
+  opacity: 1;
+}
+
+.react-flow__handle.osint-handle:hover,
+.react-flow__handle.osint-handle.connecting,
+.react-flow__handle.osint-handle.valid {
+  opacity: 1;
+  box-shadow: 0 0 0 3px #00000088, 0 0 8px 2px var(--handle-color, #888);
+}
+
+/* Touch devices have no hover — keep points visible */
+@media (hover: none) {
+  .react-flow__handle.osint-handle {
+    opacity: 1;
+  }
+}
+
+/* ==========================================
+   EDGES — labels & reconnect anchors
+   ========================================== */
+
+.osint-edge-label {
+  position: absolute;
+  pointer-events: all;
+  max-width: 220px;
+  padding: 2px 8px;
+  background: #111;
+  border: 1px solid #444;
+  border-radius: 10px;
+  color: #ccc;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+  user-select: none;
+}
+
+.osint-edge-label--selected {
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.osint-edge-label--editing {
+  max-width: none;
+  padding: 1px 4px;
+  border-color: var(--accent);
+}
+
+.osint-edge-label-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font: inherit;
+  padding: 0 2px;
+}
+
+.osint-edge-label-input::placeholder {
+  color: #666;
+}
+
+/* Endpoints of a selected edge can be dragged to re-attach it */
+.react-flow__edge.selected .react-flow__edgeupdater {
+  fill: var(--accent);
+  fill-opacity: 0.35;
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.react-flow__edge .react-flow__edgeupdater:hover {
+  fill: var(--accent);
+  fill-opacity: 0.6;
 }
 
 /* Selection box */
@@ -2345,9 +2469,8 @@ html, body, #root {
      MOBILE: EDGE HANDLES — BIGGER TOUCH
      ====================================== */
 
-  .react-flow__handle {
-    width: 14px !important;
-    height: 14px !important;
+  .react-flow__handle.osint-handle {
+    --handle-size: 16px;
   }
 
   /* ======================================

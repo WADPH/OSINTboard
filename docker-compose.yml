@@ -19,7 +19,7 @@ services:
       PORT: "8000"
     volumes:
       # Scan results and PDFs survive restarts/redeploys.
-      - osintboard-results:/app/results
+      - ./osintboard-results/:/app/results
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
@@ -40,7 +40,3 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
-
-volumes:
-  osintboard-results:
-    name: osintboard-results

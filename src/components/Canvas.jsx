@@ -1,24 +1,39 @@
-import { useState, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import ReactFlow, {
   Background,
   Controls,
   MiniMap,
   addEdge,
+  reconnectEdge,
   useNodesState,
   useEdgesState,
   SelectionMode,
   MarkerType,
   BackgroundVariant,
+  ConnectionMode,
+  ConnectionLineType,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
 import OSINTNode from './OSINTNode';
 import TimelineNode from './TimelineNode';
 import MediaNode from './MediaNode';
+import OsintEdge from './OsintEdge';
+import { EdgeUIContext } from './edgeContext';
 import QuickSearch from './QuickSearch';
 import NodeContextMenu from './NodeContextMenu';
 import MaigretReport from './MaigretReport';
 import { autoLayout } from '../utils/layoutGraph';
+import {
+  EDGE_TYPE,
+  EDGE_ROUTING_AUTO,
+  EDGE_ROUTING_MANUAL,
+  createEdgeId,
+  loadEdgeRouting,
+  saveEdgeRouting,
+  normalizeEdges,
+  routeEdges,
+} from '../utils/edgeRouting';
 import { startScan, getScan } from '../utils/maigretApi';
 import { NODE_TYPE_MAP } from '../data/nodeTypes';
 
@@ -26,6 +41,10 @@ const nodeTypes = {
   osintNode: OSINTNode,
   timelineNode: TimelineNode,
   mediaNode: MediaNode,
+};
+
+const edgeTypes = {
+  [EDGE_TYPE]: OsintEdge,
 };
 
 let nodeId = 0;
@@ -71,6 +90,13 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
   const [nodeMenu, setNodeMenu] = useState(null); // {nodeId, x, y} | null
   const [reportNodeId, setReportNodeId] = useState(null); // node whose maigret popup is open
   const scanPollRef = useRef(null); // polling interval for the active scan
+
+  // --- Edges: routing mode, label editing, connect/reconnect state ---
+  const [edgeRouting, setEdgeRouting] = useState(loadEdgeRouting);
+  const [editingEdgeId, setEditingEdgeId] = useState(null);
+  const [isConnecting, setIsConnecting] = useState(false); // shows all handles while dragging
+  const reconnectingEdgeId = useRef(null);
+  const edgeUI = useMemo(() => ({ editingEdgeId, setEditingEdgeId }), [editingEdgeId]);
 
   // --- Undo / Redo system ---
   const historyRef = useRef([{ nodes: [], edges: [] }]);
@@ -206,13 +232,17 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
       }, 0);
       nodeId = maxId;
 
+      // Boards saved before 4-handle nodes have edges without handle ids
+      const migratedEdges = normalizeEdges(newEdges);
+
       isUndoRedoing.current = true;
       setNodes(newNodes);
-      setEdges(newEdges);
+      setEdges(migratedEdges);
+      setEditingEdgeId(null);
       setTimeout(() => { isUndoRedoing.current = false; }, 0);
 
       // Reset history with this as the initial state
-      historyRef.current = [cloneForHistory(newNodes, newEdges)];
+      historyRef.current = [cloneForHistory(newNodes, migratedEdges)];
       setHistoryIndex(0);
     },
     canUndo,
@@ -225,9 +255,10 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
     (params) => {
       const newEdge = {
         ...params,
+        id: createEdgeId(),
         style: { stroke: '#aaa', strokeWidth: 2 },
         markerEnd: { type: MarkerType.ArrowClosed, color: '#aaa' },
-        type: 'smoothstep',
+        type: EDGE_TYPE,
         animated: false,
       };
 
@@ -266,6 +297,66 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
     },
     [setEdges, setNodes, nodes]
   );
+
+  // No self-loops and no duplicate edge in the same direction between two
+  // nodes (the edge being reconnected doesn't count as its own duplicate).
+  const isValidConnection = useCallback(
+    (conn) => {
+      if (!conn.source || !conn.target || conn.source === conn.target) return false;
+      return !edges.some(
+        (e) =>
+          e.id !== reconnectingEdgeId.current &&
+          e.source === conn.source &&
+          e.target === conn.target
+      );
+    },
+    [edges]
+  );
+
+  const onConnectStart = useCallback(() => setIsConnecting(true), []);
+  const onConnectEnd = useCallback(() => setIsConnecting(false), []);
+
+  // Drag an edge's end onto another handle/node to re-attach it.
+  // Dropping on empty canvas leaves the edge as it was.
+  const onReconnectStart = useCallback((_event, edge) => {
+    reconnectingEdgeId.current = edge.id;
+    setIsConnecting(true);
+  }, []);
+
+  const onReconnect = useCallback(
+    (oldEdge, newConnection) => {
+      setEdges((eds) =>
+        reconnectEdge(oldEdge, newConnection, eds, { shouldReplaceId: false })
+      );
+    },
+    [setEdges]
+  );
+
+  const onReconnectEnd = useCallback(() => {
+    reconnectingEdgeId.current = null;
+    setIsConnecting(false);
+  }, []);
+
+  const onEdgeDoubleClick = useCallback((event, edge) => {
+    event.stopPropagation();
+    setEditingEdgeId(edge.id);
+  }, []);
+
+  // Auto routing: keep every edge attached to the facing sides of its nodes.
+  // routeEdges returns the same array when nothing changed, so no loop.
+  useEffect(() => {
+    if (edgeRouting !== EDGE_ROUTING_AUTO) return;
+    const routed = routeEdges(nodes, edges);
+    if (routed !== edges) setEdges(routed);
+  }, [nodes, edges, edgeRouting, setEdges]);
+
+  const toggleEdgeRouting = useCallback(() => {
+    setEdgeRouting((mode) => {
+      const next = mode === EDGE_ROUTING_AUTO ? EDGE_ROUTING_MANUAL : EDGE_ROUTING_AUTO;
+      saveEdgeRouting(next);
+      return next;
+    });
+  }, []);
 
   const onDragOver = useCallback((event) => {
     event.preventDefault();
@@ -613,8 +704,9 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
   }, []);
 
   return (
+    <EdgeUIContext.Provider value={edgeUI}>
     <div
-      className="canvas-wrapper"
+      className={`canvas-wrapper ${isConnecting ? 'canvas-wrapper--connecting' : ''}`}
       ref={reactFlowWrapper}
       tabIndex={-1}
       onKeyDown={handleKeyDown}
@@ -708,6 +800,17 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
         >
           🔀
         </button>
+        <button
+          className={`undo-redo-btn edge-routing-btn ${edgeRouting === EDGE_ROUTING_AUTO ? 'edge-routing-btn--auto' : ''}`}
+          onClick={toggleEdgeRouting}
+          title={
+            edgeRouting === EDGE_ROUTING_AUTO
+              ? 'Edges: Auto — attach to the nearest sides of nodes. Click for Manual.'
+              : 'Edges: Manual — stay on the points you chose. Click for Auto.'
+          }
+        >
+          {edgeRouting === EDGE_ROUTING_AUTO ? '⇄ Auto' : '✋ Manual'}
+        </button>
       </div>
 
       <ReactFlow
@@ -716,6 +819,19 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onConnectStart={onConnectStart}
+        onConnectEnd={onConnectEnd}
+        onReconnect={onReconnect}
+        onReconnectStart={onReconnectStart}
+        onReconnectEnd={onReconnectEnd}
+        onEdgeDoubleClick={onEdgeDoubleClick}
+        isValidConnection={isValidConnection}
+        connectionMode={ConnectionMode.Loose}
+        connectionLineType={ConnectionLineType.SmoothStep}
+        // A selected edge is drawn above nodes so its end anchors aren't
+        // covered by the node handles sitting at the same spot (reconnect).
+        elevateEdgesOnSelect
+        edgeTypes={edgeTypes}
         onInit={setReactFlowInstance}
         onDrop={onDrop}
         onDragOver={onDragOver}
@@ -767,6 +883,7 @@ const Canvas = forwardRef(function Canvas({ isMobile, pendingNodeType, onNodePla
         )}
       </ReactFlow>
     </div>
+    </EdgeUIContext.Provider>
   );
 });
 

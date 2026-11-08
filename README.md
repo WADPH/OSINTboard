@@ -13,7 +13,10 @@
 - 🎨 **CAD-style black canvas** — white-on-dark theme, grid snapping, minimap
 - 🧩 **16 node types** — Person, Phone, Email, Address, Place, Social Media, URL, Company, Username, IP, External Link, Note, Date, Document, Timeline, Media
 - 🖱️ **Drag & drop** — grab nodes from the sidebar, drop them anywhere on the canvas
-- 🔗 **Link analysis** — click + drag between nodes to draw connection lines with arrow markers
+- 🔗 **Link analysis** — drag between any of the 4 connection points (top, right, bottom, left) to draw arrowed lines; every point works as both input and output
+- 🏷️ **Edge labels** — double-click a connection to name the relationship ("works at", "owns", "called"…)
+- ↪️ **Reconnect** — select a connection and drag either end to another point or node
+- ⇄ **Auto / Manual routing** — Auto attaches connections to the facing sides of nodes as you move them; Manual keeps the points you chose
 - ✏️ **Inline editing** — double-click any node to edit its label
 - 🕵️ **Maigret username scanning** — right-click a Username node → **Run Scan** to check the handle across ~500 sites; results render in-app with account badges, profile links, tags, and a downloadable PDF report
 - 🎬 **YouTube embedding** — paste a YouTube URL into an External Link node to render a live video player
@@ -78,7 +81,10 @@ Scan results and PDFs persist in the `osintboard-results` named volume across re
 ### Building a Graph
 
 1. **Add nodes** — drag a node type from the sidebar onto the canvas
-2. **Connect nodes** — click the small circle (handle) at the bottom of a node and drag to the handle at the top of another
+2. **Connect nodes** — hover a node to reveal its 4 connection points, then drag from any point to a point on another node (the arrow points to where you release)
+   - Double-click a connection to add or edit its label
+   - Select a connection and drag its end to re-attach it
+   - Toggle **⇄ Auto / ✋ Manual** in the top-left toolbar to switch connection routing
 3. **Label nodes** — double-click a node to type your intelligence data
 4. **Arrange** — drag nodes to reposition; they snap to a 10px grid
 5. **Zoom & pan** — scroll to zoom, drag the canvas background to pan

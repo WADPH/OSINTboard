@@ -1,5 +1,6 @@
 import { memo, useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Handle, Position, useReactFlow } from 'reactflow';
+import { useReactFlow } from 'reactflow';
+import NodeHandles from './NodeHandles';
 import { NODE_TYPE_MAP } from '../data/nodeTypes';
 import MediaAttachments from './MediaAttachments';
 import MediaLightbox from './MediaLightbox';
@@ -163,16 +164,7 @@ const OSINTNode = memo(({ id, data, selected }) => {
           : `0 0 0 1px ${color}88`,
       }}
     >
-      <Handle
-        type="target"
-        position={Position.Top}
-        style={{
-          background: color,
-          width: 10,
-          height: 10,
-          border: '2px solid #000',
-        }}
-      />
+      <NodeHandles color={color} />
       <div
         className="osint-node-header"
         style={{ borderBottomColor: color + '66' }}
@@ -338,16 +330,6 @@ const OSINTNode = memo(({ id, data, selected }) => {
           </div>
         )}
       </div>
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        style={{
-          background: color,
-          width: 10,
-          height: 10,
-          border: '2px solid #000',
-        }}
-      />
     </div>
     {lightboxItem && (
       <MediaLightbox
